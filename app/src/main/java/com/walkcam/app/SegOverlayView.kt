@@ -76,7 +76,7 @@ class SegOverlayView @JvmOverloads constructor(
             cxFrame + squareSide / 2f,
             cyFrame + squareSide / 2f
         )
-        val p = Paint(Paint.FILTER_BITMAP).apply { isFilterBitmap = true }
+        val p = Paint().apply { isFilterBitmap = true }
         canvas.drawBitmap(bmp, null, rect, p)
         edgePaint.strokeWidth = 3f
         edgePaint.style = Paint.Style.STROKE
