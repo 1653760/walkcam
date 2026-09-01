@@ -10,13 +10,20 @@ import java.nio.FloatBuffer
 
 class SegEngine(context: Context) {
 
-    data class SegResult(val walkable: ByteArray, val maskSize: Int, val walkPct: Float, val ms: Long)
+    data class SegResult(
+        val walkable: ByteArray,
+        val maskSize: Int,
+        val walkPct: Float,
+        val ms: Long,
+        val centerClass: String
+    )
 
     private val env = OrtEnvironment.getEnvironment()
     private var session: OrtSession
     private var inputName: String
     private val walkSet: Set<Int>
     val walkLabels: String
+    private val allLabels: Map<Int, String>
 
     private val inputSize = 512
     private val maskSize = 128
@@ -45,6 +52,10 @@ class SegEngine(context: Context) {
             for (k in labels.keys()) sb.append(labels.getString(k)).append("、")
             sb.toString().trimEnd('、')
         }
+        val allObj = root.getJSONObject("all")
+        val al = HashMap<Int, String>(allObj.length())
+        for (k in allObj.keys()) al[k.toInt()] = allObj.getString(k)
+        allLabels = al
         Log.i(TAG, "seg engine ready, classes=$numClasses, walkable=${s.size}")
     }
 
@@ -57,6 +68,7 @@ class SegEngine(context: Context) {
         fillTensor(rgb)
         val shape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
         val raw = ByteArray(maskSize * maskSize)
+        val classMask = ByteArray(maskSize * maskSize)
         OnnxTensor.createTensor(env, FloatBuffer.wrap(floatBuf), shape).use { tensor ->
             session.run(mapOf(inputName to tensor)).use { out ->
                 val rows = toRows(out[0].value)
@@ -71,15 +83,18 @@ class SegEngine(context: Context) {
                             bestId = c
                         }
                     }
+                    classMask[p] = bestId.toByte()
                     raw[p] = if (walkSet.contains(bestId)) 1 else 0
                 }
             }
         }
+        val centerId = classMask[(maskSize / 2) * maskSize + maskSize / 2].toInt() and 0xFF
+        val centerClass = allLabels[centerId] ?: "?$centerId"
         val mask = majorityFilter(raw)
         var walkCount = 0
         for (b in mask) if (b.toInt() == 1) walkCount++
         val t1 = System.nanoTime()
-        return SegResult(mask, maskSize, 100f * walkCount / mask.size, (t1 - t0) / 1_000_000)
+        return SegResult(mask, maskSize, 100f * walkCount / mask.size, (t1 - t0) / 1_000_000, centerClass)
     }
 
     private fun majorityFilter(raw: ByteArray): ByteArray {
