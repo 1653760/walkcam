@@ -74,7 +74,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "模型还在加载中", Toast.LENGTH_SHORT).show()
             return
         }
-        e.setMode(m)
+        e.mode = m
         refreshModeButtons(m)
         overlayView.clear()
         Toast.makeText(this, "已切换到${e.modeNames[m]}模式：${e.labelsFor(m)}", Toast.LENGTH_LONG).show()
