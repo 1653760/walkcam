@@ -15,16 +15,36 @@ STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 WALKABLE_KEYS = ("road", "sidewalk", "walkway", "path", "floor", "flooring", "rug", "carpet", "grass", "field", "terrain")
 
 MODELS = [
-    ("outdoor", "nvidia/segformer-b1-finetuned-cityscapes-512-512", 19, True),
+    ("outdoor", "nvidia/segformer-b1-finetuned-cityscapes-1024-1024", 19, True),
     ("indoor", "nvidia/segformer-b1-finetuned-ade-512-512", 150, False),
 ]
 
+MIRROR = "https://hf-mirror.com"
+
+
+def download_file(url, dst):
+    r = requests.get(url, timeout=1800, stream=True)
+    if r.status_code != 200:
+        return False
+    with open(dst, "wb") as f:
+        for chunk in r.iter_content(chunk_size=1 << 20):
+            f.write(chunk)
+    return True
+
 
 def load_model(repo_id):
-    from huggingface_hub import snapshot_download
     from transformers import SegformerForSemanticSegmentation
 
-    local = snapshot_download(repo_id=repo_id)
+    local = os.path.join("hf_models", repo_id.replace("/", "__"))
+    os.makedirs(local, exist_ok=True)
+    base = f"{MIRROR}/{repo_id}/resolve/main"
+    if not download_file(f"{base}/config.json", os.path.join(local, "config.json")):
+        raise RuntimeError(f"config.json download failed for {repo_id}")
+    got = download_file(f"{base}/model.safetensors", os.path.join(local, "model.safetensors"))
+    if not got:
+        got = download_file(f"{base}/pytorch_model.bin", os.path.join(local, "pytorch_model.bin"))
+    if not got:
+        raise RuntimeError(f"weights download failed for {repo_id}")
     model = SegformerForSemanticSegmentation.from_pretrained(local).eval()
     return model
 
