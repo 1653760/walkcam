@@ -5,7 +5,6 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.util.Size
-import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,8 +25,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var overlayView: SegOverlayView
     private lateinit var hudText: TextView
-    private lateinit var btnOutdoor: Button
-    private lateinit var btnIndoor: Button
 
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private val busy = AtomicBoolean(false)
@@ -52,12 +49,6 @@ class MainActivity : AppCompatActivity() {
         previewView = findViewById(R.id.previewView)
         overlayView = findViewById(R.id.overlayView)
         hudText = findViewById(R.id.hudText)
-        btnOutdoor = findViewById(R.id.btnOutdoor)
-        btnIndoor = findViewById(R.id.btnIndoor)
-
-        btnOutdoor.setOnClickListener { switchMode(0) }
-        btnIndoor.setOnClickListener { switchMode(1) }
-        refreshModeButtons(0)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED
@@ -68,34 +59,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun switchMode(m: Int) {
-        val e = engine
-        if (e == null) {
-            Toast.makeText(this, "模型还在加载中", Toast.LENGTH_SHORT).show()
-            return
-        }
-        e.mode = m
-        refreshModeButtons(m)
-        overlayView.clear()
-        Toast.makeText(this, "已切换到${e.modeNames[m]}模式：${e.labelsFor(m)}", Toast.LENGTH_LONG).show()
-    }
-
-    private fun refreshModeButtons(m: Int) {
-        btnOutdoor.isActivated = m == 0
-        btnIndoor.isActivated = m == 1
-        btnOutdoor.alpha = if (m == 0) 1f else 0.5f
-        btnIndoor.alpha = if (m == 1) 1f else 0.5f
-    }
-
     private fun start() {
-        hudText.text = "模型加载中（室外+室内），请稍候…"
+        hudText.text = "模型加载中，请稍候…"
         Thread {
             try {
                 val e = SegEngine(this)
                 e.warmup()
                 engine = e
                 runOnUiThread {
-                    hudText.text = "就绪（室外模式）"
+                    hudText.text = "就绪"
                     startCamera()
                 }
             } catch (t: Throwable) {
@@ -152,8 +124,8 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 hudText.text = String.format(
                     Locale.CHINA,
-                    "模式 %s | 分割 %d ms | 端到端 %d ms\n画面中央 %.0f%% 可通行",
-                    e.modeNames[e.mode], res.ms, totalMs, res.walkPct
+                    "分割 %d ms | 端到端 %d ms\n画面中央 %.0f%% 可通行（绿）",
+                    res.ms, totalMs, res.walkPct
                 )
                 overlayView.update(res.walkable, res.maskSize, info)
             }
