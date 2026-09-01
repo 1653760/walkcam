@@ -60,10 +60,6 @@ class SegEngine(context: Context) {
         )
     }
 
-    fun setMode(m: Int) {
-        if (m in 0..1) mode = m
-    }
-
     fun warmup() {
         run(IntArray(inputSize * inputSize) { -0x1000000 })
     }
