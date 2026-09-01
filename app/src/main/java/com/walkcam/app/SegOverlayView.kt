@@ -55,7 +55,7 @@ class SegOverlayView @JvmOverloads constructor(
             return
         }
         for (i in mask.indices) {
-            maskColors[i] = if (mask[i].toInt() == 1) 0x8F00E676.toInt() else 0
+            maskColors[i] = if (mask[i].toInt() == 1) 0x8F00E676.toInt() else 0x59FF5252.toInt()
         }
         var bmp = maskBitmap
         if (bmp == null || bmp.width != maskSize) {
@@ -83,6 +83,8 @@ class SegOverlayView @JvmOverloads constructor(
         canvas.drawRect(rect, edgePaint)
 
         legendPaint.color = 0xFF00E676.toInt()
-        canvas.drawText("可通行", rect.left + 10f, rect.top + 46f, legendPaint)
+        canvas.drawText("绿=可通行", rect.left + 10f, rect.top + 46f, legendPaint)
+        legendPaint.color = 0xFFFF5252.toInt()
+        canvas.drawText("红=不可通行", rect.left + 10f, rect.top + 92f, legendPaint)
     }
 }
