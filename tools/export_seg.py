@@ -15,8 +15,7 @@ STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 WALKABLE_KEYS = ("road", "sidewalk", "walkway", "path", "floor", "flooring", "rug", "carpet", "grass", "field", "terrain")
 
 MODELS = [
-    ("outdoor", "nvidia/segformer-b1-finetuned-cityscapes-1024-1024", 19, True),
-    ("indoor", "nvidia/segformer-b1-finetuned-ade-512-512", 150, False),
+    ("seg", "nvidia/segformer-b1-finetuned-ade-512-512", 150, True),
 ]
 
 MIRROR = "https://hf-mirror.com"
@@ -135,7 +134,7 @@ def main():
         id2label = model.config.id2label
         wids = walkable_ids(id2label)
         print(f"walkable classes ({len(wids)}): {[(i, id2label[i]) for i in wids]}")
-        spec[key] = {
+        spec = {
             "walkable": wids,
             "labels": {str(i): id2label[i] for i in wids},
         }
@@ -171,7 +170,7 @@ def main():
         except Exception as e:
             print(f"quantization skipped: {e}")
 
-        shutil.copyfile(final, os.path.join(ASSETS, f"seg_{key}.onnx"))
+        shutil.copyfile(final, os.path.join(ASSETS, "seg.onnx"))
         print(f"FINAL {key}: {final}")
 
     with open(os.path.join(ASSETS, "walkable.json"), "w", encoding="utf-8") as f:
