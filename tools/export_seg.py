@@ -152,23 +152,7 @@ def main():
                 assert frac_bottom > 0.15, f"{key}: road not detected at bottom ({frac_bottom:.2f})"
 
         final = fp32
-        try:
-            from onnxruntime.quantization import QuantType, quantize_dynamic
-
-            int8 = f"seg_{key}_int8.onnx"
-            quantize_dynamic(fp32, int8, weight_type=QuantType.QInt8, op_types_to_quantize=["MatMul"])
-            print(f"int8 size: {os.path.getsize(int8) / 1e6:.1f} MB")
-            if os.path.exists("bus.jpg"):
-                m32, _ = predict_mask(fp32)
-                m8, _ = predict_mask(int8)
-                agree = float((m32 == m8).mean())
-                print(f"int8 agreement vs fp32: {agree:.3f}")
-                if agree < 0.90:
-                    print("int8 degraded too much, keeping fp32")
-                else:
-                    final = int8
-        except Exception as e:
-            print(f"quantization skipped: {e}")
+        print("using fp32 (skip int8: correctness first on ARM devices)")
 
         shutil.copyfile(final, os.path.join(ASSETS, "seg.onnx"))
         print(f"FINAL {key}: {final}")
