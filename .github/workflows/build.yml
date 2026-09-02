@@ -19,7 +19,7 @@ jobs:
           python-version: "3.10"
 
       - name: Install python deps
-        run: pip install torch onnx onnxruntime pillow requests numpy scipy
+        run: pip install torch torchvision onnx onnxruntime pillow requests numpy
 
       - name: Export seg models
         run: python tools/export_seg.py
