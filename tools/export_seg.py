@@ -119,24 +119,21 @@ def build_pspnet():
         if k.startswith("backbone.stem."):
             mapped["stem.seq." + k[len("backbone.stem."):]] = v
         elif k.startswith("backbone.layer"):
-            mapped["backboneless." + k[len("backbone."):]] = v
+            mapped[k[len("backbone."):]] = v
         elif k.startswith("backbone."):
             mapped[k] = v
         elif k.startswith("decode_head.psp_modules."):
-            nk = k.replace(".psp_modules.", ".stages.").replace(".conv.weight", ".0.weight").replace(".conv.bias", ".0.bias").replace(".bn.weight", ".1.weight").replace(".bn.bias", ".1.bias").replace(".bn.running_mean", ".1.running_mean").replace(".bn.running_var", ".1.running_var").replace(".bn.num_batches_tracked", ".1.num_batches_tracked")
+            nk = k.replace("decode_head.psp_modules.", "decode_head.stages.")
+            nk = nk.replace(".1.conv.", ".0.")
+            nk = nk.replace(".1.bn.", ".1.")
             mapped[nk] = v
         elif k.startswith("decode_head.bottleneck."):
-            nk = k.replace(".conv.weight", ".0.weight").replace(".conv.bias", ".0.bias").replace(".bn.weight", ".1.weight").replace(".bn.bias", ".1.bias").replace(".bn.running_mean", ".1.running_mean").replace(".bn.running_var", ".1.running_var").replace(".bn.num_batches_tracked", ".1.num_batches_tracked")
+            nk = k.replace("decode_head.bottleneck.conv.", "decode_head.bottleneck.0.")
+            nk = nk.replace("decode_head.bottleneck.bn.", "decode_head.bottleneck.1.")
             mapped[nk] = v
         elif k.startswith("decode_head.conv_seg."):
             mapped[k] = v
-    final_map = {}
-    for k, v in mapped.items():
-        if k.startswith("backboneless."):
-            final_map[k[len("backboneless."):]] = v
-        else:
-            final_map[k] = v
-    missing, unexpected = net.load_state_dict(final_map, strict=False)
+    missing, unexpected = net.load_state_dict(mapped, strict=False)
     print(f"missing={len(missing)} unexpected={len(unexpected)}")
     real_missing = [m for m in missing if "num_batches_tracked" not in m and "fc." not in m]
     print(f"critical missing: {real_missing[:8]}")
