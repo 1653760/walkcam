@@ -89,6 +89,9 @@ def build_pspnet():
     net = PSPNet().eval()
     ckpt = torch.load("pspnet.pth", map_location="cpu")
     state = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
+    print(f"RAW KEYS ({len(state)}):")
+    for k in list(state.keys())[:50]:
+        print(f"  {k}  {tuple(state[k].shape)}")
     mapped = {}
     for k, v in state.items():
         if k.startswith("decode_head."):
