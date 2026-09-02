@@ -11,8 +11,8 @@ android {
         applicationId = "com.walkcam.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.6"
+        versionCode = 7
+        versionName = "0.7"
     }
 
     buildTypes {
@@ -35,7 +35,7 @@ android {
         }
     }
     androidResources {
-        noCompress += "onnx"
+        noCompress += listOf("onnx", "tflite")
     }
 }
 
@@ -47,6 +47,6 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
