@@ -11,8 +11,8 @@ android {
         applicationId = "com.walkcam.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.12"
+        versionCode = 13
+        versionName = "0.13"
     }
 
     buildTypes {
