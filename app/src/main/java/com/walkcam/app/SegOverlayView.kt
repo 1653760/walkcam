@@ -155,18 +155,58 @@ class SegOverlayView @JvmOverloads constructor(
         val out = ArrayList<List<FloatArray>>()
         for (comp in comps) {
             if (comp.size < minSize || out.size >= 3) break
-            val pts = ArrayList<FloatArray>(comp.size / 4 + 8)
-            var i = 0
-            while (i < comp.size) {
-                val idx = comp[i]
-                pts.add(floatArrayOf((idx % n).toFloat(), (idx / n).toFloat()))
-                i += 3
-            }
-            var poly = convexHull(pts)
-            poly = simplify(poly, n * 0.035f)
-            out.add(poly)
+            val boundary = traceBoundary(comp, n) ?: continue
+            val poly = simplify(boundary, n * 0.03f)
+            if (poly.size >= 3) out.add(poly)
         }
         return out
+    }
+
+    private fun traceBoundary(comp: IntArray, n: Int): ArrayList<FloatArray>? {
+        val inComp = BooleanArray(n * n)
+        var minIdx = Int.MAX_VALUE
+        for (idx in comp) {
+            inComp[idx] = true
+            if (idx < minIdx) minIdx = idx
+        }
+        val dxs = intArrayOf(1, 1, 0, -1, -1, -1, 0, 1)
+        val dys = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
+
+        var px = minIdx % n
+        var py = minIdx / n
+        var back = 4
+        val pts = ArrayList<FloatArray>(256)
+        pts.add(floatArrayOf(px.toFloat(), py.toFloat()))
+        val startX = px
+        val startY = py
+        val maxSteps = comp.size * 8 + 64
+        var steps = 0
+        var firstMove = true
+        var firstDir = -1
+        while (steps++ < maxSteps) {
+            var found = false
+            for (k in 1..8) {
+                val d = (back + k) % 8
+                val nx = px + dxs[d]
+                val ny = py + dys[d]
+                if (nx in 0 until n && ny in 0 until n && inComp[ny * n + nx]) {
+                    if (firstMove) {
+                        firstDir = d
+                        firstMove = false
+                    } else if (nx == startX && ny == startY && d == firstDir) {
+                        return pts
+                    }
+                    pts.add(floatArrayOf(nx.toFloat(), ny.toFloat()))
+                    back = (d + 4) % 8
+                    px = nx
+                    py = ny
+                    found = true
+                    break
+                }
+            }
+            if (!found) return if (pts.size >= 3) pts else null
+        }
+        return if (pts.size >= 3) pts else null
     }
 
     private fun connectedComponents(mask: ByteArray, n: Int): List<IntArray> {
