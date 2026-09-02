@@ -29,6 +29,22 @@ class SegEngine(context: Context) {
     private val maskSize = 128
     private val floatBuf = FloatArray(3 * inputSize * inputSize)
     private val filtered = ByteArray(maskSize * maskSize)
+    private val opened = ByteArray(maskSize * maskSize)
+    private val tmpMask = ByteArray(maskSize * maskSize)
+    private val ccLabel = IntArray(maskSize * maskSize)
+    private val ccStack = IntArray(maskSize * maskSize)
+    private val emaFloat = FloatArray(maskSize * maskSize)
+    private var emaReady = false
+
+    // v0.1.61: post-processing knobs
+    // Bottom anchor: a walkable connected component must touch y >= anchorY, else discarded
+    private val anchorY = (maskSize * 3) / 4   // 96 for size 128
+    // EMA blending: newMask * alpha + prev * (1-alpha)
+    private val emaAlpha = 0.6f
+    // Binarize threshold on EMA float mask
+    private val emaThresh = 0.5f
+    // Min component size (pixels) to keep even if it's the largest
+    private val minCompPixels = 20
 
     init {
         val spec = context.assets.open("walkable.json").bufferedReader().use { it.readText() }
@@ -49,7 +65,7 @@ class SegEngine(context: Context) {
         }
         session = env.createSession(bytes, opts)
         inputName = session.inputInfo.keys.first()
-        Log.i(TAG, "seg engine ready, input=$inputName")
+        Log.i(TAG, "seg engine ready, input=$inputName anchorY=$anchorY emaAlpha=$emaAlpha")
     }
 
     fun warmup() {
@@ -76,12 +92,19 @@ class SegEngine(context: Context) {
                 centerId = rows[maskSize / 2][maskSize / 2].toInt()
             }
         }
-        val mask = majorityFilter(raw)
+        // Step 1: 3x3 majority (spatial denoise on argmax)
+        val maj = majorityFilter(raw)
+        // Step 2: morphological opening (erode then dilate, 3x3) -- kills small wall bumps
+        val op = openMask(maj)
+        // Step 3: largest connected component with bottom-anchor requirement
+        val cc = largestBottomAnchored(op)
+        // Step 4: temporal EMA
+        val ema = emaBlend(cc)
         var walkCount = 0
-        for (b in mask) if (b.toInt() == 1) walkCount++
+        for (b in ema) if (b.toInt() == 1) walkCount++
         val t1 = System.nanoTime()
         val centerName = allLabels[centerId] ?: "?$centerId"
-        return SegResult(mask, maskSize, 100f * walkCount / mask.size, (t1 - t0) / 1_000_000, centerName, centerName)
+        return SegResult(ema, maskSize, 100f * walkCount / ema.size, (t1 - t0) / 1_000_000, centerName, centerName)
     }
 
     private fun fillTensor(rgb: IntArray) {
@@ -120,7 +143,115 @@ class SegEngine(context: Context) {
                 filtered[y * n + x] = if (count >= 5) 1 else 0
             }
         }
-        return filtered.copyOf()
+        return filtered
+    }
+
+    /** 3x3 morphological opening: erode then dilate. Kills small isolated blobs and thin bumps. */
+    private fun openMask(src: ByteArray): ByteArray {
+        val n = maskSize
+        // erode -> tmpMask
+        for (y in 0 until n) {
+            for (x in 0 until n) {
+                if (src[y * n + x].toInt() != 1) { tmpMask[y * n + x] = 0; continue }
+                if (x == 0 || y == 0 || x == n - 1 || y == n - 1) { tmpMask[y * n + x] = 1; continue }
+                var allOne = true
+                loop@ for (dy in -1..1) {
+                    for (dx in -1..1) {
+                        if (src[(y + dy) * n + (x + dx)].toInt() != 1) { allOne = false; break@loop }
+                    }
+                }
+                tmpMask[y * n + x] = if (allOne) 1 else 0
+            }
+        }
+        // dilate tmpMask -> opened
+        for (y in 0 until n) {
+            for (x in 0 until n) {
+                var anyOne = false
+                val y0 = if (y == 0) 0 else -1
+                val y1 = if (y == n - 1) 0 else 1
+                val x0 = if (x == 0) 0 else -1
+                val x1 = if (x == n - 1) 0 else 1
+                loop@ for (dy in y0..y1) {
+                    for (dx in x0..x1) {
+                        if (tmpMask[(y + dy) * n + (x + dx)].toInt() == 1) { anyOne = true; break@loop }
+                    }
+                }
+                opened[y * n + x] = if (anyOne) 1 else 0
+            }
+        }
+        return opened
+    }
+
+    /**
+     * Iterative 4-connectivity flood fill. Keeps only the largest component that touches
+     * y >= anchorY (the walkable region must be near the bottom of the frame).
+     * If no component qualifies, output is all zero.
+     */
+    private fun largestBottomAnchored(src: ByteArray): ByteArray {
+        val n = maskSize
+        java.util.Arrays.fill(ccLabel, 0)
+        var nextLabel = 0
+        var bestLabel = -1
+        var bestSize = 0
+        for (y in 0 until n) {
+            for (x in 0 until n) {
+                val idx0 = y * n + x
+                if (src[idx0].toInt() != 1 || ccLabel[idx0] != 0) continue
+                nextLabel++
+                var top = 0
+                ccStack[top++] = idx0
+                ccLabel[idx0] = nextLabel
+                var size = 0
+                var touchesBottom = false
+                while (top > 0) {
+                    val idx = ccStack[--top]
+                    size++
+                    val cy = idx / n
+                    val cx = idx - cy * n
+                    if (cy >= anchorY) touchesBottom = true
+                    if (cx > 0) {
+                        val ni = idx - 1
+                        if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
+                    }
+                    if (cx < n - 1) {
+                        val ni = idx + 1
+                        if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
+                    }
+                    if (cy > 0) {
+                        val ni = idx - n
+                        if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
+                    }
+                    if (cy < n - 1) {
+                        val ni = idx + n
+                        if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
+                    }
+                }
+                if (touchesBottom && size >= minCompPixels && size > bestSize) {
+                    bestSize = size
+                    bestLabel = nextLabel
+                }
+            }
+        }
+        for (i in 0 until n * n) {
+            tmpMask[i] = if (bestLabel > 0 && ccLabel[i] == bestLabel) 1 else 0
+        }
+        return tmpMask
+    }
+
+    /** EMA over binary mask stored as float in [0,1], re-binarized with emaThresh. */
+    private fun emaBlend(src: ByteArray): ByteArray {
+        val n = maskSize * maskSize
+        if (!emaReady) {
+            for (i in 0 until n) emaFloat[i] = src[i].toFloat()
+            emaReady = true
+        } else {
+            val a = emaAlpha
+            val b = 1f - a
+            for (i in 0 until n) emaFloat[i] = a * src[i].toFloat() + b * emaFloat[i]
+        }
+        val out = ByteArray(n)
+        for (i in 0 until n) out[i] = if (emaFloat[i] >= emaThresh) 1 else 0
+        return out
     }
 
     fun close() {
