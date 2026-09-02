@@ -19,8 +19,8 @@ object YuvToRgb {
             w2 = image.width
             h2 = image.height
         }
-        val crop = minOf(w2, h2)
-        return FrameInfo(w2, h2, crop, (w2 - crop) / 2, (h2 - crop) / 2)
+        // Full-frame: no crop, stretch the entire frame to OUT×OUT
+        return FrameInfo(w2, h2, -1, 0, 0)
     }
 
     fun convert(image: ImageProxy, out: IntArray): FrameInfo {
@@ -50,10 +50,9 @@ object YuvToRgb {
             val cy = oy.toFloat() / (oh - 1)
             for (ox in 0 until ow) {
                 val cx = ox.toFloat() / (ow - 1)
-                val ux = info.offX + cx * (info.cropSize - 1)
-                val uy = info.offY + cy * (info.cropSize - 1)
-                val nx = ux / (W2 - 1)
-                val ny = uy / (H2 - 1)
+                // Full-frame stretch: map (cx,cy) directly onto the full (W2,H2) frame
+                val nx = cx
+                val ny = cy
                 val sx: Float
                 val sy: Float
                 when (rotation) {
