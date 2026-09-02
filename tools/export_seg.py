@@ -68,21 +68,42 @@ def build_pspnet():
             out = F.dropout(out, 0.1, training=False)
             return self.conv_seg(out)
 
+    class V1cStem(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.seq = nn.Sequential(
+                nn.Conv2d(3, 32, 3, padding=1, bias=False),
+                nn.BatchNorm2d(32),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(32, 32, 3, padding=1, bias=False),
+                nn.BatchNorm2d(32),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(32, 64, 3, padding=1, bias=False),
+                nn.BatchNorm2d(64),
+            )
+
+        def forward(self, x):
+            return self.seq(x)
+
     class PSPNet(nn.Module):
         def __init__(self):
             super().__init__()
-            self.backbone = resnet50(replace_stride_with_dilation=(False, True, True))
+            r = resnet50(replace_stride_with_dilation=(False, True, True))
+            self.stem = V1cStem()
+            self.maxpool = r.maxpool
+            self.layer1 = r.layer1
+            self.layer2 = r.layer2
+            self.layer3 = r.layer3
+            self.layer4 = r.layer4
             self.decode_head = PSPHead()
 
         def forward(self, images):
-            x = self.backbone.conv1(images)
-            x = self.backbone.bn1(x)
-            x = self.backbone.relu(x)
-            x = self.backbone.maxpool(x)
-            x = self.backbone.layer1(x)
-            x = self.backbone.layer2(x)
-            x = self.backbone.layer3(x)
-            x = self.backbone.layer4(x)
+            x = self.stem(images)
+            x = self.maxpool(x)
+            x = self.layer1(x)
+            x = self.layer2(x)
+            x = self.layer3(x)
+            x = self.layer4(x)
             logits = self.decode_head(x)
             return F.interpolate(logits, size=(MASK_SIZE, MASK_SIZE), mode="bilinear", align_corners=False)
 
@@ -103,11 +124,13 @@ def build_pspnet():
                 mapped[nk] = v
             elif k.startswith("decode_head.conv_seg."):
                 mapped[k] = v
+        elif k.startswith("backbone.stem."):
+            mapped[k.replace("backbone.stem.", "stem.")] = v
         elif k.startswith("backbone."):
             mapped[k] = v
     missing, unexpected = net.load_state_dict(mapped, strict=False)
     print(f"missing={len(missing)} unexpected={len(unexpected)}")
-    real_missing = [m for m in missing if "num_batches_tracked" not in m and "fc." not in m]
+    real_missing = [m for m in missing if "num_batches_tracked" not in m and "fc." not in m and "backbone.conv1" not in m and "backbone.bn1" not in m]
     print(f"critical missing: {real_missing[:8]}")
     assert not real_missing, "state dict mapping incomplete"
     return net
