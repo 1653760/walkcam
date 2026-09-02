@@ -156,10 +156,52 @@ class SegOverlayView @JvmOverloads constructor(
         for (comp in comps) {
             if (comp.size < minSize || out.size >= 3) break
             val boundary = traceBoundary(comp, n) ?: continue
-            val poly = simplify(boundary, n * 0.03f)
-            if (poly.size >= 3) out.add(poly)
+            val smoothed = smoothClosed(boundary, 5, 2)
+            val poly = simplify(smoothed, n * 0.04f)
+            if (poly.size >= 3) out.add(chaikin(poly, 2))
         }
         return out
+    }
+
+    private fun smoothClosed(pts: ArrayList<FloatArray>, window: Int, passes: Int): ArrayList<FloatArray> {
+        var cur = pts
+        repeat(passes) {
+            val m = cur.size
+            if (m < window + 2) return cur
+            val half = window / 2
+            val out = ArrayList<FloatArray>(m)
+            for (i in 0 until m) {
+                var sx = 0f
+                var sy = 0f
+                var c = 0
+                for (k in -half..half) {
+                    val j = ((i + k) % m + m) % m
+                    sx += cur[j][0]
+                    sy += cur[j][1]
+                    c++
+                }
+                out.add(floatArrayOf(sx / c, sy / c))
+            }
+            cur = out
+        }
+        return cur
+    }
+
+    private fun chaikin(pts: List<FloatArray>, iterations: Int): ArrayList<FloatArray> {
+        var cur: List<FloatArray> = pts
+        repeat(iterations) {
+            val m = cur.size
+            if (m < 3) break
+            val out = ArrayList<FloatArray>(m * 2)
+            for (i in 0 until m) {
+                val a = cur[i]
+                val b = cur[(i + 1) % m]
+                out.add(floatArrayOf(a[0] * 0.75f + b[0] * 0.25f, a[1] * 0.75f + b[1] * 0.25f))
+                out.add(floatArrayOf(a[0] * 0.25f + b[0] * 0.75f, a[1] * 0.25f + b[1] * 0.75f))
+            }
+            cur = out
+        }
+        return ArrayList(cur)
     }
 
     private fun traceBoundary(comp: IntArray, n: Int): ArrayList<FloatArray>? {
