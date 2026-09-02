@@ -4,7 +4,7 @@ import androidx.camera.core.ImageProxy
 
 object YuvToRgb {
 
-    const val OUT = 512
+    const val OUT = 640
 
     data class FrameInfo(val w: Int, val h: Int, val cropSize: Int, val offX: Int, val offY: Int)
 
