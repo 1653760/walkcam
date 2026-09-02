@@ -36,15 +36,18 @@ class SegEngine(context: Context) {
     private val emaFloat = FloatArray(maskSize * maskSize)
     private var emaReady = false
 
-    // v0.1.61: post-processing knobs
-    // Bottom anchor: a walkable connected component must touch y >= anchorY, else discarded
-    private val anchorY = (maskSize * 3) / 4   // 96 for size 128
-    // EMA blending: newMask * alpha + prev * (1-alpha)
-    private val emaAlpha = 0.6f
+    // v0.14 post-processing knobs
+    // Hard vertical prior: walking-path pixels almost never appear in the upper third of the frame.
+    // Everything with y < skyRowCutoff is forced to non-walkable BEFORE connectivity analysis.
+    private val skyRowCutoff = maskSize / 3   // 42 for size 128 -> top ~1/3 zeroed
+    // Bottom anchor: any kept component must touch y >= anchorY. Relaxed from 96 to 85 (~lower 1/3).
+    private val anchorY = (maskSize * 2) / 3   // 85 for size 128
+    // EMA blending: newMask * alpha + prev * (1-alpha). Raised for faster response in clutter.
+    private val emaAlpha = 0.75f
     // Binarize threshold on EMA float mask
     private val emaThresh = 0.5f
-    // Min component size (pixels) to keep even if it's the largest
-    private val minCompPixels = 20
+    // Min component size (pixels) to keep. Components smaller than this are dropped even if bottom-anchored.
+    private val minCompPixels = 25
 
     init {
         val spec = context.assets.open("walkable.json").bufferedReader().use { it.readText() }
@@ -92,13 +95,16 @@ class SegEngine(context: Context) {
                 centerId = rows[maskSize / 2][maskSize / 2].toInt()
             }
         }
-        // Step 1: 3x3 majority (spatial denoise on argmax)
+        // Step 1: hard vertical prior -- zero out the upper 1/3 (sky/wall/ceiling region)
+        zeroTopRows(raw)
+        // Step 2: 3x3 majority (spatial denoise on argmax)
         val maj = majorityFilter(raw)
-        // Step 2: morphological opening (erode then dilate, 3x3) -- kills small wall bumps
+        // Step 3: morphological opening (erode then dilate, 3x3) -- kills small wall bumps
         val op = openMask(maj)
-        // Step 3: largest connected component with bottom-anchor requirement
-        val cc = largestBottomAnchored(op)
-        // Step 4: temporal EMA
+        // Step 4: keep ALL connected components that touch the bottom anchor row and are big enough.
+        //         This tolerates clutter that splits the floor into multiple regions.
+        val cc = keepBottomAnchoredComponents(op)
+        // Step 5: temporal EMA
         val ema = emaBlend(cc)
         var walkCount = 0
         for (b in ema) if (b.toInt() == 1) walkCount++
@@ -182,22 +188,32 @@ class SegEngine(context: Context) {
         return opened
     }
 
+    /** Force upper 1/3 rows to non-walkable (sky/wall/ceiling hard prior). */
+    private fun zeroTopRows(mask: ByteArray) {
+        val cutoff = skyRowCutoff * maskSize
+        for (i in 0 until cutoff) mask[i] = 0
+    }
+
     /**
-     * Iterative 4-connectivity flood fill. Keeps only the largest component that touches
-     * y >= anchorY (the walkable region must be near the bottom of the frame).
-     * If no component qualifies, output is all zero.
+     * Iterative 4-connectivity flood fill. Keeps ALL components that (a) touch y >= anchorY
+     * and (b) have size >= minCompPixels. This tolerates clutter that splits the floor into
+     * several regions -- unlike a strict largest-only rule which would drop valid floor patches.
+     * Components not anchored to the bottom (isolated wall/table false positives) are dropped.
      */
-    private fun largestBottomAnchored(src: ByteArray): ByteArray {
+    private fun keepBottomAnchoredComponents(src: ByteArray): ByteArray {
         val n = maskSize
         java.util.Arrays.fill(ccLabel, 0)
         var nextLabel = 0
-        var bestLabel = -1
-        var bestSize = 0
+        // component metadata; nextLabel is 1-based, index by (label-1)
+        val maxLabels = 4096
+        val compTouches = BooleanArray(maxLabels)
+        val compSize = IntArray(maxLabels)
         for (y in 0 until n) {
             for (x in 0 until n) {
                 val idx0 = y * n + x
                 if (src[idx0].toInt() != 1 || ccLabel[idx0] != 0) continue
                 nextLabel++
+                if (nextLabel >= maxLabels) break
                 var top = 0
                 ccStack[top++] = idx0
                 ccLabel[idx0] = nextLabel
@@ -226,14 +242,13 @@ class SegEngine(context: Context) {
                         if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
                     }
                 }
-                if (touchesBottom && size >= minCompPixels && size > bestSize) {
-                    bestSize = size
-                    bestLabel = nextLabel
-                }
+                compTouches[nextLabel - 1] = touchesBottom
+                compSize[nextLabel - 1] = size
             }
         }
         for (i in 0 until n * n) {
-            tmpMask[i] = if (bestLabel > 0 && ccLabel[i] == bestLabel) 1 else 0
+            val lb = ccLabel[i]
+            tmpMask[i] = if (lb > 0 && lb <= nextLabel && compTouches[lb - 1] && compSize[lb - 1] >= minCompPixels) 1 else 0
         }
         return tmpMask
     }
