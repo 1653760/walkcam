@@ -41,7 +41,7 @@ def build_pspnet():
     from torchvision.models import resnet50
 
     class PSPHead(nn.Module):
-        def __init__(self, in_ch=2048, mid=1024, out=512, ncls=NUM_CLASSES, bins=(1, 2, 3, 6)):
+        def __init__(self, in_ch=2048, mid=512, out=512, ncls=NUM_CLASSES, bins=(1, 2, 3, 6)):
             super().__init__()
             self.stages = nn.ModuleList()
             for _ in bins:
