@@ -30,8 +30,9 @@ class SegEngine(context: Context) {
     private val maskSize = 128
     private val numClasses = 150
     private val floatBuf = FloatArray(3 * inputSize * inputSize)
-    private val means = floatArrayOf(0.485f, 0.456f, 0.406f)
-    private val stds = floatArrayOf(0.229f, 0.224f, 0.225f)
+    private val means = floatArrayOf(123.675f, 116.28f, 103.53f)
+    private val stds = floatArrayOf(58.395f, 57.12f, 57.375f)
+    private var channelBgr = false
     private val filtered = ByteArray(maskSize * maskSize)
 
     init {
@@ -46,6 +47,14 @@ class SegEngine(context: Context) {
         val al = HashMap<Int, String>(allObj.length())
         for (k in allObj.keys()) al[k.toInt()] = allObj.getString(k)
         allLabels = al
+        val norm = root.optJSONObject("norm")
+        if (norm != null) {
+            val m = norm.optJSONArray("mean")
+            val sd = norm.optJSONArray("std")
+            if (m != null && m.length() == 3) for (i in 0..2) means[i] = m.getDouble(i).toFloat()
+            if (sd != null && sd.length() == 3) for (i in 0..2) stds[i] = sd.getDouble(i).toFloat()
+            channelBgr = "bgr" == norm.optString("order", "rgb")
+        }
 
         val bytes = context.assets.open("seg.onnx").readBytes()
         val opts = OrtSession.SessionOptions().apply {
@@ -60,6 +69,7 @@ class SegEngine(context: Context) {
     fun warmup() {
         run(IntArray(inputSize * inputSize) { -0x1000000 })
     }
+
 
     fun run(rgb: IntArray): SegResult {
         val t0 = System.nanoTime()
@@ -123,11 +133,20 @@ class SegEngine(context: Context) {
 
     private fun fillTensor(rgb: IntArray) {
         val n = inputSize * inputSize
-        for (i in 0 until n) {
-            val p = rgb[i]
-            floatBuf[i] = (((p shr 16) and 0xFF) / 255f - means[0]) / stds[0]
-            floatBuf[n + i] = (((p shr 8) and 0xFF) / 255f - means[1]) / stds[1]
-            floatBuf[2 * n + i] = ((p and 0xFF) / 255f - means[2]) / stds[2]
+        if (channelBgr) {
+            for (i in 0 until n) {
+                val p = rgb[i]
+                floatBuf[i] = ((p and 0xFF) - means[0]) / stds[0]
+                floatBuf[n + i] = (((p shr 8) and 0xFF) - means[1]) / stds[1]
+                floatBuf[2 * n + i] = (((p shr 16) and 0xFF) - means[2]) / stds[2]
+            }
+        } else {
+            for (i in 0 until n) {
+                val p = rgb[i]
+                floatBuf[i] = (((p shr 16) and 0xFF) - means[0]) / stds[0]
+                floatBuf[n + i] = (((p shr 8) and 0xFF) - means[1]) / stds[1]
+                floatBuf[2 * n + i] = ((p and 0xFF) - means[2]) / stds[2]
+            }
         }
     }
 
