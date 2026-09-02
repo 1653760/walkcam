@@ -108,20 +108,23 @@ class SegOverlayView @JvmOverloads constructor(
         canvas.drawText("红=不可通行", rect.left + 10f, rect.top + 92f, legendPaint)
 
         val dbg = debugRgb
-        if (dbg != null && dbg.size == 512 * 512) {
-            var db = debugBitmap
-            if (db == null) {
-                db = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888)
-                debugBitmap = db
+        if (dbg != null && dbg.isNotEmpty()) {
+            val sideLen = Math.sqrt(dbg.size.toDouble()).toInt()
+            if (sideLen * sideLen == dbg.size) {
+                var db = debugBitmap
+                if (db == null || db.width != sideLen) {
+                    db = Bitmap.createBitmap(sideLen, sideLen, Bitmap.Config.ARGB_8888)
+                    debugBitmap = db
+                }
+                db.setPixels(dbg, 0, sideLen, 0, 0, sideLen, sideLen)
+                val side = 200f
+                val dx = width - side - 14f
+                val dy = 14f
+                val dst = RectF(dx, dy, dx + side, dy + side)
+                canvas.drawBitmap(db, null, dst, debugPaint)
+                canvas.drawRect(dst, debugBorderPaint)
+                canvas.drawText("模型看到→ 中心:$debugCenterClass", dx, dy + side + 40f, debugTextPaint)
             }
-            db.setPixels(dbg, 0, 512, 0, 0, 512, 512)
-            val side = 200f
-            val dx = width - side - 14f
-            val dy = 14f
-            val dst = RectF(dx, dy, dx + side, dy + side)
-            canvas.drawBitmap(db, null, dst, debugPaint)
-            canvas.drawRect(dst, debugBorderPaint)
-            canvas.drawText("模型看到→ 中心:$debugCenterClass", dx, dy + side + 40f, debugTextPaint)
         }
     }
 }
