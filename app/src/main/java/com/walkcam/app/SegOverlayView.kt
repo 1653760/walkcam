@@ -189,7 +189,7 @@ class SegOverlayView @JvmOverloads constructor(
 
     private fun chaikin(pts: List<FloatArray>, iterations: Int): ArrayList<FloatArray> {
         var cur: List<FloatArray> = pts
-        repeat(iterations) {
+        for (iter in 0 until iterations) {
             val m = cur.size
             if (m < 3) break
             val out = ArrayList<FloatArray>(m * 2)
