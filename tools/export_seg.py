@@ -115,22 +115,29 @@ def build_pspnet():
         print(f"  {k}  {tuple(state[k].shape)}")
     mapped = {}
     for k, v in state.items():
-        if k.startswith("decode_head."):
-            if ".psp_modules." in k:
-                nk = k.replace(".psp_modules.", ".stages.").replace(".conv.weight", ".0.weight").replace(".conv.bias", ".0.bias").replace(".bn.weight", ".1.weight").replace(".bn.bias", ".1.bias").replace(".bn.running_mean", ".1.running_mean").replace(".bn.running_var", ".1.running_var").replace(".bn.num_batches_tracked", ".1.num_batches_tracked")
-                mapped[nk] = v
-            elif ".bottleneck." in k:
-                nk = k.replace(".conv.weight", ".0.weight").replace(".conv.bias", ".0.bias").replace(".bn.weight", ".1.weight").replace(".bn.bias", ".1.bias").replace(".bn.running_mean", ".1.running_mean").replace(".bn.running_var", ".1.running_var").replace(".bn.num_batches_tracked", ".1.num_batches_tracked")
-                mapped[nk] = v
-            elif k.startswith("decode_head.conv_seg."):
-                mapped[k] = v
-        elif k.startswith("backbone.stem."):
-            mapped[k.replace("backbone.stem.", "stem.")] = v
+        if k.startswith("backbone.stem."):
+            mapped["stem.seq." + k[len("backbone.stem."):]] = v
+        elif k.startswith("backbone.layer"):
+            mapped["backboneless." + k[len("backbone."):]] = v
         elif k.startswith("backbone."):
             mapped[k] = v
-    missing, unexpected = net.load_state_dict(mapped, strict=False)
+        elif k.startswith("decode_head.psp_modules."):
+            nk = k.replace(".psp_modules.", ".stages.").replace(".conv.weight", ".0.weight").replace(".conv.bias", ".0.bias").replace(".bn.weight", ".1.weight").replace(".bn.bias", ".1.bias").replace(".bn.running_mean", ".1.running_mean").replace(".bn.running_var", ".1.running_var").replace(".bn.num_batches_tracked", ".1.num_batches_tracked")
+            mapped[nk] = v
+        elif k.startswith("decode_head.bottleneck."):
+            nk = k.replace(".conv.weight", ".0.weight").replace(".conv.bias", ".0.bias").replace(".bn.weight", ".1.weight").replace(".bn.bias", ".1.bias").replace(".bn.running_mean", ".1.running_mean").replace(".bn.running_var", ".1.running_var").replace(".bn.num_batches_tracked", ".1.num_batches_tracked")
+            mapped[nk] = v
+        elif k.startswith("decode_head.conv_seg."):
+            mapped[k] = v
+    final_map = {}
+    for k, v in mapped.items():
+        if k.startswith("backboneless."):
+            final_map[k[len("backboneless."):]] = v
+        else:
+            final_map[k] = v
+    missing, unexpected = net.load_state_dict(final_map, strict=False)
     print(f"missing={len(missing)} unexpected={len(unexpected)}")
-    real_missing = [m for m in missing if "num_batches_tracked" not in m and "fc." not in m and "backbone.conv1" not in m and "backbone.bn1" not in m]
+    real_missing = [m for m in missing if "num_batches_tracked" not in m and "fc." not in m]
     print(f"critical missing: {real_missing[:8]}")
     assert not real_missing, "state dict mapping incomplete"
     return net
