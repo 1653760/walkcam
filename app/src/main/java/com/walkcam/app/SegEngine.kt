@@ -24,21 +24,15 @@ class SegEngine(context: Context) {
     private var inputName: String
     private val walkSet: Set<Int>
     private val allLabels: Map<Int, String>
-    private val offset: Int
 
     private val inputSize = 512
     private val maskSize = 128
-    private val numClasses = 150
     private val floatBuf = FloatArray(3 * inputSize * inputSize)
-    private val means = floatArrayOf(123.675f, 116.28f, 103.53f)
-    private val stds = floatArrayOf(58.395f, 57.12f, 57.375f)
-    private var channelBgr = false
     private val filtered = ByteArray(maskSize * maskSize)
 
     init {
         val spec = context.assets.open("walkable.json").bufferedReader().use { it.readText() }
         val root = JSONObject(spec)
-        offset = root.optInt("offset", 0)
         val arr = root.getJSONArray("walkable")
         val s = HashSet<Int>(arr.length())
         for (i in 0 until arr.length()) s.add(arr.getInt(i))
@@ -47,14 +41,6 @@ class SegEngine(context: Context) {
         val al = HashMap<Int, String>(allObj.length())
         for (k in allObj.keys()) al[k.toInt()] = allObj.getString(k)
         allLabels = al
-        val norm = root.optJSONObject("norm")
-        if (norm != null) {
-            val m = norm.optJSONArray("mean")
-            val sd = norm.optJSONArray("std")
-            if (m != null && m.length() == 3) for (i in 0..2) means[i] = m.getDouble(i).toFloat()
-            if (sd != null && sd.length() == 3) for (i in 0..2) stds[i] = sd.getDouble(i).toFloat()
-            channelBgr = "bgr" == norm.optString("order", "rgb")
-        }
 
         val bytes = context.assets.open("seg.onnx").readBytes()
         val opts = OrtSession.SessionOptions().apply {
@@ -70,7 +56,6 @@ class SegEngine(context: Context) {
         run(IntArray(inputSize * inputSize) { -0x1000000 })
     }
 
-
     fun run(rgb: IntArray): SegResult {
         val t0 = System.nanoTime()
         fillTensor(rgb)
@@ -79,36 +64,43 @@ class SegEngine(context: Context) {
         var centerId = -1
         OnnxTensor.createTensor(env, FloatBuffer.wrap(floatBuf), shape).use { tensor ->
             session.run(mapOf(inputName to tensor)).use { out ->
-                val rows = toRows(out[0].value)
-                val n = maskSize * maskSize
-                for (p in 0 until n) {
-                    var bestVal = -1e9f
-                    var bestId = -1
-                    for (c in 0 until numClasses) {
-                        val v = rows[c][p]
-                        if (v > bestVal) {
-                            bestVal = v
-                            bestId = c
-                        }
-                    }
-                    raw[p] = if (walkSet.contains(bestId - offset)) 1 else 0
-                }
-                val cp = (maskSize / 2) * maskSize + maskSize / 2
-                var bestVal = -1e9f
-                for (c in 0 until numClasses) {
-                    if (rows[c][cp] > bestVal) {
-                        bestVal = rows[c][cp]
-                        centerId = c
+                val value = out[0].value
+                val rows = toRows(value)
+                for (y in 0 until maskSize) {
+                    val row = rows[y]
+                    for (x in 0 until maskSize) {
+                        val id = row[x].toInt()
+                        if (walkSet.contains(id)) raw[y * maskSize + x] = 1
                     }
                 }
+                centerId = rows[maskSize / 2][maskSize / 2].toInt()
             }
         }
         val mask = majorityFilter(raw)
         var walkCount = 0
         for (b in mask) if (b.toInt() == 1) walkCount++
         val t1 = System.nanoTime()
-        val centerName = allLabels[centerId - offset] ?: "?$centerId"
+        val centerName = allLabels[centerId] ?: "?$centerId"
         return SegResult(mask, maskSize, 100f * walkCount / mask.size, (t1 - t0) / 1_000_000, centerName, centerName)
+    }
+
+    private fun fillTensor(rgb: IntArray) {
+        val n = inputSize * inputSize
+        for (i in 0 until n) {
+            val p = rgb[i]
+            floatBuf[i] = ((p shr 16) and 0xFF).toFloat()
+            floatBuf[n + i] = ((p shr 8) and 0xFF).toFloat()
+            floatBuf[2 * n + i] = (p and 0xFF).toFloat()
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun toRows(value: Any): Array<LongArray> {
+        var node = value as Array<*>
+        while (node.size == 1 && node[0] is Array<*> && (node[0] as Array<*>).size == maskSize) {
+            node = node[0] as Array<*>
+        }
+        return node as Array<LongArray>
     }
 
     private fun majorityFilter(raw: ByteArray): ByteArray {
@@ -129,44 +121,6 @@ class SegEngine(context: Context) {
             }
         }
         return filtered.copyOf()
-    }
-
-    private fun fillTensor(rgb: IntArray) {
-        val n = inputSize * inputSize
-        if (channelBgr) {
-            for (i in 0 until n) {
-                val p = rgb[i]
-                floatBuf[i] = ((p and 0xFF) - means[0]) / stds[0]
-                floatBuf[n + i] = (((p shr 8) and 0xFF) - means[1]) / stds[1]
-                floatBuf[2 * n + i] = (((p shr 16) and 0xFF) - means[2]) / stds[2]
-            }
-        } else {
-            for (i in 0 until n) {
-                val p = rgb[i]
-                floatBuf[i] = (((p shr 16) and 0xFF) - means[0]) / stds[0]
-                floatBuf[n + i] = (((p shr 8) and 0xFF) - means[1]) / stds[1]
-                floatBuf[2 * n + i] = ((p and 0xFF) - means[2]) / stds[2]
-            }
-        }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun toRows(value: Any): Array<FloatArray> {
-        var node = value as Array<*>
-        while (node.size == 1 && node[0] is Array<*> && (node[0] as Array<*>).size == numClasses) {
-            node = node[0] as Array<*>
-        }
-        val rows = Array(numClasses) { FloatArray(maskSize * maskSize) }
-        for (c in 0 until numClasses) {
-            val planes = node[c] as Array<*>
-            var idx = 0
-            for (y in 0 until maskSize) {
-                val row = planes[y] as FloatArray
-                System.arraycopy(row, 0, rows[c], idx, maskSize)
-                idx += maskSize
-            }
-        }
-        return rows
     }
 
     fun close() {
