@@ -36,18 +36,29 @@ class SegEngine(context: Context) {
     private val emaFloat = FloatArray(maskSize * maskSize)
     private var emaReady = false
 
-    // v0.14 post-processing knobs
-    // Hard vertical prior: walking-path pixels almost never appear in the upper third of the frame.
-    // Everything with y < skyRowCutoff is forced to non-walkable BEFORE connectivity analysis.
-    private val skyRowCutoff = maskSize / 3   // 42 for size 128 -> top ~1/3 zeroed
-    // Bottom anchor: any kept component must touch y >= anchorY. Relaxed from 96 to 85 (~lower 1/3).
-    private val anchorY = (maskSize * 2) / 3   // 85 for size 128
-    // EMA blending: newMask * alpha + prev * (1-alpha). Raised for faster response in clutter.
+    // classMap: raw argmax class id per pixel, used for wall-leak detection
+    private val classMap = IntArray(maskSize * maskSize)
+
+    // ADE20K class ids that count as "vertical surface" (wall / ceiling / building).
+    // When a column accumulates wallRunThresh consecutive or near-consecutive wall pixels
+    // above a walkable pixel, that walkable pixel is suppressed.
+    private val wallClassIds = intArrayOf(0, 1, 5)   // wall=0, building=1, ceiling=5
+
+    // Post-processing knobs
+    // Hard vertical prior: top 1/3 of frame forced non-walkable
+    private val skyRowCutoff = maskSize / 3          // 42 rows
+    // Bottom anchor: kept components must touch y >= anchorY
+    private val anchorY = (maskSize * 2) / 3         // 85
+    // EMA
     private val emaAlpha = 0.75f
-    // Binarize threshold on EMA float mask
     private val emaThresh = 0.5f
-    // Min component size (pixels) to keep. Components smaller than this are dropped even if bottom-anchored.
+    // Min component size
     private val minCompPixels = 25
+    // Wall-leak filter: if a column has wallRunRows or more wall-class rows ABOVE a walkable
+    // pixel (anywhere from y=0 down to that pixel), suppress that walkable pixel.
+    // 12 rows out of 128 ≈ ~10% of frame height; loose enough to keep real floors below a
+    // thin window sill, tight enough to kill walls that span 1/3+ of the frame.
+    private val wallRunRows = 12
 
     init {
         val spec = context.assets.open("walkable.json").bufferedReader().use { it.readText() }
@@ -68,7 +79,7 @@ class SegEngine(context: Context) {
         }
         session = env.createSession(bytes, opts)
         inputName = session.inputInfo.keys.first()
-        Log.i(TAG, "seg engine ready, input=$inputName anchorY=$anchorY emaAlpha=$emaAlpha")
+        Log.i(TAG, "seg engine ready input=$inputName skyRow=$skyRowCutoff anchorY=$anchorY wallRunRows=$wallRunRows")
     }
 
     fun warmup() {
@@ -89,22 +100,25 @@ class SegEngine(context: Context) {
                     val row = rows[y]
                     for (x in 0 until maskSize) {
                         val id = row[x].toInt()
+                        classMap[y * maskSize + x] = id
                         if (walkSet.contains(id)) raw[y * maskSize + x] = 1
                     }
                 }
                 centerId = rows[maskSize / 2][maskSize / 2].toInt()
             }
         }
-        // Step 1: hard vertical prior -- zero out the upper 1/3 (sky/wall/ceiling region)
+        // Step 1: hard vertical prior -- zero top 1/3
         zeroTopRows(raw)
-        // Step 2: 3x3 majority (spatial denoise on argmax)
+        // Step 2: 3x3 majority filter
         val maj = majorityFilter(raw)
-        // Step 3: morphological opening (erode then dilate, 3x3) -- kills small wall bumps
+        // Step 3: morphological opening (3x3 erode + dilate)
         val op = openMask(maj)
-        // Step 4: keep ALL connected components that touch the bottom anchor row and are big enough.
-        //         This tolerates clutter that splits the floor into multiple regions.
+        // Step 4: wall-leak column filter -- suppress walkable pixels that lie below a
+        //         tall run of wall/ceiling pixels in the same column
+        wallLeakFilter(op)
+        // Step 5: keep all bottom-anchored components (>= anchorY, >= minCompPixels)
         val cc = keepBottomAnchoredComponents(op)
-        // Step 5: temporal EMA
+        // Step 6: temporal EMA
         val ema = emaBlend(cc)
         var walkCount = 0
         for (b in ema) if (b.toInt() == 1) walkCount++
@@ -132,19 +146,22 @@ class SegEngine(context: Context) {
         return node as Array<LongArray>
     }
 
+    /** Force upper 1/3 rows to non-walkable (sky/ceiling/upper-wall prior). */
+    private fun zeroTopRows(mask: ByteArray) {
+        val cutoff = skyRowCutoff * maskSize
+        for (i in 0 until cutoff) mask[i] = 0
+    }
+
     private fun majorityFilter(raw: ByteArray): ByteArray {
         val n = maskSize
         for (y in 0 until n) {
             for (x in 0 until n) {
                 if (x == 0 || y == 0 || x == n - 1 || y == n - 1) {
-                    filtered[y * n + x] = raw[y * n + x]
-                    continue
+                    filtered[y * n + x] = raw[y * n + x]; continue
                 }
                 var count = 0
-                for (dy in -1..1) {
-                    for (dx in -1..1) {
-                        if (raw[(y + dy) * n + (x + dx)].toInt() == 1) count++
-                    }
+                for (dy in -1..1) for (dx in -1..1) {
+                    if (raw[(y + dy) * n + (x + dx)].toInt() == 1) count++
                 }
                 filtered[y * n + x] = if (count >= 5) 1 else 0
             }
@@ -155,32 +172,24 @@ class SegEngine(context: Context) {
     /** 3x3 morphological opening: erode then dilate. Kills small isolated blobs and thin bumps. */
     private fun openMask(src: ByteArray): ByteArray {
         val n = maskSize
-        // erode -> tmpMask
         for (y in 0 until n) {
             for (x in 0 until n) {
                 if (src[y * n + x].toInt() != 1) { tmpMask[y * n + x] = 0; continue }
                 if (x == 0 || y == 0 || x == n - 1 || y == n - 1) { tmpMask[y * n + x] = 1; continue }
                 var allOne = true
-                loop@ for (dy in -1..1) {
-                    for (dx in -1..1) {
-                        if (src[(y + dy) * n + (x + dx)].toInt() != 1) { allOne = false; break@loop }
-                    }
+                loop@ for (dy in -1..1) for (dx in -1..1) {
+                    if (src[(y + dy) * n + (x + dx)].toInt() != 1) { allOne = false; break@loop }
                 }
                 tmpMask[y * n + x] = if (allOne) 1 else 0
             }
         }
-        // dilate tmpMask -> opened
         for (y in 0 until n) {
             for (x in 0 until n) {
                 var anyOne = false
-                val y0 = if (y == 0) 0 else -1
-                val y1 = if (y == n - 1) 0 else 1
-                val x0 = if (x == 0) 0 else -1
-                val x1 = if (x == n - 1) 0 else 1
-                loop@ for (dy in y0..y1) {
-                    for (dx in x0..x1) {
-                        if (tmpMask[(y + dy) * n + (x + dx)].toInt() == 1) { anyOne = true; break@loop }
-                    }
+                val y0 = if (y == 0) 0 else -1; val y1 = if (y == n - 1) 0 else 1
+                val x0 = if (x == 0) 0 else -1; val x1 = if (x == n - 1) 0 else 1
+                loop@ for (dy in y0..y1) for (dx in x0..x1) {
+                    if (tmpMask[(y + dy) * n + (x + dx)].toInt() == 1) { anyOne = true; break@loop }
                 }
                 opened[y * n + x] = if (anyOne) 1 else 0
             }
@@ -188,23 +197,54 @@ class SegEngine(context: Context) {
         return opened
     }
 
-    /** Force upper 1/3 rows to non-walkable (sky/wall/ceiling hard prior). */
-    private fun zeroTopRows(mask: ByteArray) {
-        val cutoff = skyRowCutoff * maskSize
-        for (i in 0 until cutoff) mask[i] = 0
+    /**
+     * Wall-leak column filter (modifies mask in-place).
+     *
+     * For each column x, scan top-to-bottom. Maintain a running count of how many of the
+     * last [wallRunRows] rows were "wall-class" pixels (using classMap).
+     * When that count >= wallRunRows/2 (i.e. majority of recent rows are wall), any walkable
+     * pixel at or below that point in this column is suppressed.
+     *
+     * This catches the pattern: [wall, wall, wall, ... , floor (misclassified)] where the model
+     * bleeds floor label onto wall pixels that are physically connected from top to bottom.
+     *
+     * We use a sliding window rather than a strict run to tolerate occasional non-wall pixels
+     * (door frames, pictures on walls, etc.) interrupting the wall band.
+     */
+    private fun wallLeakFilter(mask: ByteArray) {
+        val n = maskSize
+        val windowHalf = wallRunRows / 2   // need >= half the window to be wall = 6 out of 12
+        for (x in 0 until n) {
+            var wallInWindow = 0
+            // circular-buffer approach: track wall count for rows [y-wallRunRows .. y-1]
+            // for simplicity, use a plain array slot per row
+            val isWallRow = BooleanArray(n)
+            for (y in 0 until n) {
+                val cls = classMap[y * n + x]
+                isWallRow[y] = wallClassIds.contains(cls)
+            }
+            // sliding window count
+            for (y in 0 until n) {
+                // add row y to window
+                if (isWallRow[y]) wallInWindow++
+                // remove row that left the window
+                if (y >= wallRunRows && isWallRow[y - wallRunRows]) wallInWindow--
+                // if window (ending at y) has majority wall, suppress walkable at y
+                if (wallInWindow >= windowHalf && mask[y * n + x].toInt() == 1) {
+                    mask[y * n + x] = 0
+                }
+            }
+        }
     }
 
     /**
-     * Iterative 4-connectivity flood fill. Keeps ALL components that (a) touch y >= anchorY
-     * and (b) have size >= minCompPixels. This tolerates clutter that splits the floor into
-     * several regions -- unlike a strict largest-only rule which would drop valid floor patches.
-     * Components not anchored to the bottom (isolated wall/table false positives) are dropped.
+     * Keep ALL 4-connected components that touch y >= anchorY and have size >= minCompPixels.
+     * Components not anchored to the bottom are dropped (isolated wall/furniture false positives).
      */
     private fun keepBottomAnchoredComponents(src: ByteArray): ByteArray {
         val n = maskSize
         java.util.Arrays.fill(ccLabel, 0)
         var nextLabel = 0
-        // component metadata; nextLabel is 1-based, index by (label-1)
         val maxLabels = 4096
         val compTouches = BooleanArray(maxLabels)
         val compSize = IntArray(maxLabels)
@@ -212,35 +252,18 @@ class SegEngine(context: Context) {
             for (x in 0 until n) {
                 val idx0 = y * n + x
                 if (src[idx0].toInt() != 1 || ccLabel[idx0] != 0) continue
-                nextLabel++
-                if (nextLabel >= maxLabels) break
+                nextLabel++; if (nextLabel >= maxLabels) break
                 var top = 0
-                ccStack[top++] = idx0
-                ccLabel[idx0] = nextLabel
-                var size = 0
-                var touchesBottom = false
+                ccStack[top++] = idx0; ccLabel[idx0] = nextLabel
+                var size = 0; var touchesBottom = false
                 while (top > 0) {
-                    val idx = ccStack[--top]
-                    size++
-                    val cy = idx / n
-                    val cx = idx - cy * n
+                    val idx = ccStack[--top]; size++
+                    val cy = idx / n; val cx = idx - cy * n
                     if (cy >= anchorY) touchesBottom = true
-                    if (cx > 0) {
-                        val ni = idx - 1
-                        if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
-                    }
-                    if (cx < n - 1) {
-                        val ni = idx + 1
-                        if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
-                    }
-                    if (cy > 0) {
-                        val ni = idx - n
-                        if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
-                    }
-                    if (cy < n - 1) {
-                        val ni = idx + n
-                        if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni }
-                    }
+                    if (cx > 0)     { val ni = idx - 1; if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni } }
+                    if (cx < n - 1) { val ni = idx + 1; if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni } }
+                    if (cy > 0)     { val ni = idx - n; if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni } }
+                    if (cy < n - 1) { val ni = idx + n; if (src[ni].toInt() == 1 && ccLabel[ni] == 0) { ccLabel[ni] = nextLabel; ccStack[top++] = ni } }
                 }
                 compTouches[nextLabel - 1] = touchesBottom
                 compSize[nextLabel - 1] = size
@@ -253,15 +276,14 @@ class SegEngine(context: Context) {
         return tmpMask
     }
 
-    /** EMA over binary mask stored as float in [0,1], re-binarized with emaThresh. */
+    /** EMA over binary mask stored as float in [0,1], re-binarized at emaThresh. */
     private fun emaBlend(src: ByteArray): ByteArray {
         val n = maskSize * maskSize
         if (!emaReady) {
             for (i in 0 until n) emaFloat[i] = src[i].toFloat()
             emaReady = true
         } else {
-            val a = emaAlpha
-            val b = 1f - a
+            val a = emaAlpha; val b = 1f - a
             for (i in 0 until n) emaFloat[i] = a * src[i].toFloat() + b * emaFloat[i]
         }
         val out = ByteArray(n)
@@ -269,9 +291,7 @@ class SegEngine(context: Context) {
         return out
     }
 
-    fun close() {
-        session.close()
-    }
+    fun close() { session.close() }
 
     companion object {
         private const val TAG = "SegEngine"
