@@ -12,7 +12,7 @@ MASK_SIZE = 128
 NUM_CLASSES = 150
 
 MIRROR = "https://hf-mirror.com"
-REPO_ID = "nvidia/segformer-b0-finetuned-ade-512-512"
+REPO_ID = "nvidia/segformer-b1-finetuned-ade-512-512"
 
 WALKABLE_KEYS = ("road", "sidewalk", "walkway", "path", "floor", "flooring", "rug", "carpet", "grass", "field", "terrain")
 
