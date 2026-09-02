@@ -19,7 +19,7 @@ jobs:
           python-version: "3.10"
 
       - name: Install python deps
-        run: pip install torch transformers onnx onnxruntime onnxsim onnxscript pillow requests huggingface_hub safetensors
+        run: pip install ultralytics torch transformers onnx onnxruntime onnxsim onnxscript pillow requests huggingface_hub safetensors
 
       - name: Export seg models
         run: python tools/export_seg.py
