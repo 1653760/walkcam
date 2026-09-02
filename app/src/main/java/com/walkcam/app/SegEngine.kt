@@ -15,7 +15,8 @@ class SegEngine(context: Context) {
         val maskSize: Int,
         val walkPct: Float,
         val ms: Long,
-        val centerClass: String
+        val centerClass: String,
+        val centerTop3: String
     )
 
     private val env = OrtEnvironment.getEnvironment()
@@ -38,8 +39,8 @@ class SegEngine(context: Context) {
         val root = JSONObject(spec)
         val bytes = context.assets.open("seg.onnx").readBytes()
         val opts = OrtSession.SessionOptions().apply {
-            setIntraOpNumThreads(4)
-            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            setIntraOpNumThreads(6)
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT)
         }
         session = env.createSession(bytes, opts)
         inputName = session.inputInfo.keys.first()
@@ -69,6 +70,7 @@ class SegEngine(context: Context) {
         val shape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
         val raw = ByteArray(maskSize * maskSize)
         val classMask = ByteArray(maskSize * maskSize)
+        val centerScores = FloatArray(numClasses)
         OnnxTensor.createTensor(env, FloatBuffer.wrap(floatBuf), shape).use { tensor ->
             session.run(mapOf(inputName to tensor)).use { out ->
                 val rows = toRows(out[0].value)
@@ -86,15 +88,19 @@ class SegEngine(context: Context) {
                     classMask[p] = bestId.toByte()
                     raw[p] = if (walkSet.contains(bestId)) 1 else 0
                 }
+                val cpx = (maskSize / 2) * maskSize + maskSize / 2
+                for (c in 0 until numClasses) centerScores[c] = rows[c][cpx]
             }
         }
         val centerId = classMask[(maskSize / 2) * maskSize + maskSize / 2].toInt() and 0xFF
         val centerClass = allLabels[centerId] ?: "?$centerId"
+        val order = (0 until numClasses).sortedByDescending { centerScores[it] }.take(3)
+        val centerTop3 = order.joinToString(" / ") { "${allLabels[it] ?: it} ${"%.1f".format(centerScores[it])}" }
         val mask = majorityFilter(raw)
         var walkCount = 0
         for (b in mask) if (b.toInt() == 1) walkCount++
         val t1 = System.nanoTime()
-        return SegResult(mask, maskSize, 100f * walkCount / mask.size, (t1 - t0) / 1_000_000, centerClass)
+        return SegResult(mask, maskSize, 100f * walkCount / mask.size, (t1 - t0) / 1_000_000, centerClass, centerTop3)
     }
 
     private fun majorityFilter(raw: ByteArray): ByteArray {
