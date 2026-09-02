@@ -107,18 +107,15 @@ class SegEngine(context: Context) {
                 centerId = rows[maskSize / 2][maskSize / 2].toInt()
             }
         }
-        // Step 1: hard vertical prior -- zero top 1/3
-        zeroTopRows(raw)
-        // Step 2: 3x3 majority filter
+        // Step 1: 3x3 majority filter
         val maj = majorityFilter(raw)
-        // Step 3: morphological opening (3x3 erode + dilate)
+        // Step 2: morphological opening (3x3 erode + dilate)
         val op = openMask(maj)
-        // Step 4: wall-leak column filter -- suppress walkable pixels that lie below a
-        //         tall run of wall/ceiling pixels in the same column
+        // Step 3: wall-leak column filter
         wallLeakFilter(op)
-        // Step 5: keep all bottom-anchored components (>= anchorY, >= minCompPixels)
+        // Step 4: keep all bottom-anchored components (>= anchorY, >= minCompPixels)
         val cc = keepBottomAnchoredComponents(op)
-        // Step 6: temporal EMA
+        // Step 5: temporal EMA
         val ema = emaBlend(cc)
         var walkCount = 0
         for (b in ema) if (b.toInt() == 1) walkCount++
