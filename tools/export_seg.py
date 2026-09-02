@@ -12,7 +12,7 @@ MASK_SIZE = 128
 NUM_CLASSES = 150
 
 MIRROR = "https://hf-mirror.com"
-REPO_ID = "nvidia/segformer-b1-finetuned-ade-512-512"
+REPO_ID = "nvidia/segformer-b2-finetuned-ade-512-512"
 
 WALKABLE_KEYS = ("road", "sidewalk", "walkway", "path", "floor", "flooring", "rug", "carpet", "grass", "field", "terrain")
 
@@ -171,7 +171,7 @@ def main():
     }
     with open(os.path.join(ASSETS, "walkable.json"), "w", encoding="utf-8") as f:
         json.dump(spec, f, ensure_ascii=False)
-    print(f"FINAL MODEL: {final} ({os.path.getsize(final) / 1e6:.1f} MB, segformer-b0, {order})")
+    print(f"FINAL MODEL: {final} ({os.path.getsize(final) / 1e6:.1f} MB, {REPO_ID}, {order})")
 
 
 if __name__ == "__main__":
