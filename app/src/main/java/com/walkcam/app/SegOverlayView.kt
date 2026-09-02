@@ -17,13 +17,8 @@ class SegOverlayView @JvmOverloads constructor(
 
     private var walkable: ByteArray? = null
     private var maskSize = 128
-    private var srcW = 1
-    private var srcH = 1
-    private var cropSize = 1
-    private var offX = 0
-    private var offY = 0
+    private var fullFrame = true   // true = full-frame stretch mode (no crop rect)
     private var maskBitmap: Bitmap? = null
-    private val maskColors = IntArray(128 * 128)
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -31,19 +26,8 @@ class SegOverlayView @JvmOverloads constructor(
     }
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 7f
+        strokeWidth = 6f
         color = 0xFF00E676.toInt()
-    }
-    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
-        color = 0xAAFFFFFF.toInt()
-    }
-    private val legendPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF00E676.toInt()
-        textSize = 42f
-        isFakeBoldText = true
-        setShadowLayer(6f, 0f, 0f, Color.BLACK)
     }
     private val nonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFF5252.toInt()
@@ -57,14 +41,10 @@ class SegOverlayView @JvmOverloads constructor(
     private var debugBitmap: Bitmap? = null
     private val debugPaint = Paint().apply { isFilterBitmap = true }
     private val debugBorderPaint = Paint().apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 4f
-        color = Color.YELLOW
+        style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.YELLOW
     }
     private val debugTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.YELLOW
-        textSize = 34f
-        isFakeBoldText = true
+        color = Color.YELLOW; textSize = 34f; isFakeBoldText = true
         setShadowLayer(6f, 0f, 0f, Color.BLACK)
     }
 
@@ -76,56 +56,45 @@ class SegOverlayView @JvmOverloads constructor(
     fun update(walkable: ByteArray, maskSize: Int, info: YuvToRgb.FrameInfo) {
         this.walkable = walkable
         this.maskSize = maskSize
-        this.srcW = maxOf(1, info.w)
-        this.srcH = maxOf(1, info.h)
-        this.cropSize = maxOf(1, info.cropSize)
-        this.offX = info.offX
-        this.offY = info.offY
+        // cropSize == -1 means full-frame stretch mode
+        this.fullFrame = info.cropSize < 0
         invalidate()
     }
 
-    fun clear() {
-        walkable = null
-        invalidate()
-    }
+    fun clear() { walkable = null; invalidate() }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val mask = walkable ?: return
-
         val vw = width.toFloat()
         val vh = height.toFloat()
-        val s = maxOf(vw / srcW, vh / srcH)
-        val squareSide = cropSize * s
-        val cxFrame = (offX + cropSize / 2f) * s + (vw - srcW * s) / 2f
-        val cyFrame = (offY + cropSize / 2f) * s + (vh - srcH * s) / 2f
-        val rect = RectF(
-            cxFrame - squareSide / 2f,
-            cyFrame - squareSide / 2f,
-            cxFrame + squareSide / 2f,
-            cyFrame + squareSide / 2f
-        )
-        canvas.drawRect(rect, borderPaint)
 
-        val polys = extractPolygons(mask, maskSize)
+        // In full-frame mode the mask covers the entire view.
+        val drawRect = RectF(0f, 0f, vw, vh)
+
+        // Upsample mask 2× (nearest-neighbour) -> upSize×upSize for finer contours
+        val upSize = maskSize * 2
+        val upMask = upsample2x(mask, maskSize)
+
+        val polys = extractPolygons(upMask, upSize)
         if (polys.isEmpty()) {
-            canvas.drawText("前方无可通行区域", rect.left + 20f, rect.top + rect.height() / 2f, nonePaint)
+            canvas.drawText("前方无可通行区域", drawRect.left + 20f, drawRect.top + drawRect.height() / 2f, nonePaint)
         }
         for (poly in polys) {
             if (poly.size < 3) continue
             val path = Path()
             for (i in poly.indices) {
-                val sx = rect.left + poly[i][0] / maskSize * rect.width()
-                val sy = rect.top + poly[i][1] / maskSize * rect.height()
+                // poly coords are in upSize space; map to view
+                val sx = drawRect.left + poly[i][0] / upSize * drawRect.width()
+                val sy = drawRect.top  + poly[i][1] / upSize * drawRect.height()
                 if (i == 0) path.moveTo(sx, sy) else path.lineTo(sx, sy)
             }
             path.close()
             canvas.drawPath(path, fillPaint)
             canvas.drawPath(path, strokePaint)
         }
-        legendPaint.color = 0xFF00E676.toInt()
-        canvas.drawText("绿框内=可通行", rect.left + 10f, rect.top + 46f, legendPaint)
 
+        // Debug thumbnail (top-right)
         val dbg = debugRgb
         if (dbg != null && dbg.isNotEmpty()) {
             val sideLen = Math.sqrt(dbg.size.toDouble()).toInt()
@@ -137,8 +106,7 @@ class SegOverlayView @JvmOverloads constructor(
                 }
                 db.setPixels(dbg, 0, sideLen, 0, 0, sideLen, sideLen)
                 val side = 200f
-                val dx = width - side - 14f
-                val dy = 14f
+                val dx = width - side - 14f; val dy = 14f
                 val dst = RectF(dx, dy, dx + side, dy + side)
                 canvas.drawBitmap(db, null, dst, debugPaint)
                 canvas.drawRect(dst, debugBorderPaint)
@@ -147,17 +115,35 @@ class SegOverlayView @JvmOverloads constructor(
         }
     }
 
+    /** 2× nearest-neighbour upsample: n×n -> (2n)×(2n) */
+    private fun upsample2x(src: ByteArray, n: Int): ByteArray {
+        val m = n * 2
+        val dst = ByteArray(m * m)
+        for (y in 0 until n) {
+            for (x in 0 until n) {
+                val v = src[y * n + x]
+                val dy = y * 2; val dx = x * 2
+                dst[dy * m + dx]         = v
+                dst[dy * m + dx + 1]     = v
+                dst[(dy+1) * m + dx]     = v
+                dst[(dy+1) * m + dx + 1] = v
+            }
+        }
+        return dst
+    }
+
     private fun extractPolygons(mask: ByteArray, n: Int): List<List<FloatArray>> {
         val comps = connectedComponents(mask, n)
         if (comps.isEmpty()) return emptyList()
         val biggest = comps[0].size
-        val minSize = maxOf(60, biggest / 5)
-        val out = ArrayList<List<FloatArray>>()
+        // Keep components >= 1% of biggest OR >= 30px; show up to 6 regions
+        val minSize = maxOf(30, biggest / 100)
+        val out = ArrayList<List<FloatArray>>(6)
         for (comp in comps) {
-            if (comp.size < minSize || out.size >= 3) break
+            if (comp.size < minSize || out.size >= 6) break
             val boundary = traceBoundary(comp, n) ?: continue
             val smoothed = smoothClosed(boundary, 5, 2)
-            val poly = simplify(smoothed, n * 0.04f)
+            val poly = simplify(smoothed, n * 0.02f)   // tighter epsilon -> more detail
             if (poly.size >= 3) out.add(chaikin(poly, 2))
         }
         return out
@@ -171,14 +157,10 @@ class SegOverlayView @JvmOverloads constructor(
             val half = window / 2
             val out = ArrayList<FloatArray>(m)
             for (i in 0 until m) {
-                var sx = 0f
-                var sy = 0f
-                var c = 0
+                var sx = 0f; var sy = 0f; var c = 0
                 for (k in -half..half) {
                     val j = ((i + k) % m + m) % m
-                    sx += cur[j][0]
-                    sy += cur[j][1]
-                    c++
+                    sx += cur[j][0]; sy += cur[j][1]; c++
                 }
                 out.add(floatArrayOf(sx / c, sy / c))
             }
@@ -190,14 +172,12 @@ class SegOverlayView @JvmOverloads constructor(
     private fun chaikin(pts: List<FloatArray>, iterations: Int): ArrayList<FloatArray> {
         var cur: List<FloatArray> = pts
         for (iter in 0 until iterations) {
-            val m = cur.size
-            if (m < 3) break
+            val m = cur.size; if (m < 3) break
             val out = ArrayList<FloatArray>(m * 2)
             for (i in 0 until m) {
-                val a = cur[i]
-                val b = cur[(i + 1) % m]
-                out.add(floatArrayOf(a[0] * 0.75f + b[0] * 0.25f, a[1] * 0.75f + b[1] * 0.25f))
-                out.add(floatArrayOf(a[0] * 0.25f + b[0] * 0.75f, a[1] * 0.25f + b[1] * 0.75f))
+                val a = cur[i]; val b = cur[(i + 1) % m]
+                out.add(floatArrayOf(a[0]*0.75f + b[0]*0.25f, a[1]*0.75f + b[1]*0.25f))
+                out.add(floatArrayOf(a[0]*0.25f + b[0]*0.75f, a[1]*0.25f + b[1]*0.75f))
             }
             cur = out
         }
@@ -207,43 +187,26 @@ class SegOverlayView @JvmOverloads constructor(
     private fun traceBoundary(comp: IntArray, n: Int): ArrayList<FloatArray>? {
         val inComp = BooleanArray(n * n)
         var minIdx = Int.MAX_VALUE
-        for (idx in comp) {
-            inComp[idx] = true
-            if (idx < minIdx) minIdx = idx
-        }
-        val dxs = intArrayOf(1, 1, 0, -1, -1, -1, 0, 1)
-        val dys = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
-
-        var px = minIdx % n
-        var py = minIdx / n
+        for (idx in comp) { inComp[idx] = true; if (idx < minIdx) minIdx = idx }
+        val dxs = intArrayOf(1,1,0,-1,-1,-1,0,1)
+        val dys = intArrayOf(0,1,1,1,0,-1,-1,-1)
+        var px = minIdx % n; var py = minIdx / n
         var back = 4
-        val pts = ArrayList<FloatArray>(256)
+        val pts = ArrayList<FloatArray>(512)
         pts.add(floatArrayOf(px.toFloat(), py.toFloat()))
-        val startX = px
-        val startY = py
+        val startX = px; val startY = py
         val maxSteps = comp.size * 8 + 64
-        var steps = 0
-        var firstMove = true
-        var firstDir = -1
+        var steps = 0; var firstMove = true; var firstDir = -1
         while (steps++ < maxSteps) {
             var found = false
             for (k in 1..8) {
                 val d = (back + k) % 8
-                val nx = px + dxs[d]
-                val ny = py + dys[d]
+                val nx = px + dxs[d]; val ny = py + dys[d]
                 if (nx in 0 until n && ny in 0 until n && inComp[ny * n + nx]) {
-                    if (firstMove) {
-                        firstDir = d
-                        firstMove = false
-                    } else if (nx == startX && ny == startY && d == firstDir) {
-                        return pts
-                    }
+                    if (firstMove) { firstDir = d; firstMove = false }
+                    else if (nx == startX && ny == startY && d == firstDir) return pts
                     pts.add(floatArrayOf(nx.toFloat(), ny.toFloat()))
-                    back = (d + 4) % 8
-                    px = nx
-                    py = ny
-                    found = true
-                    break
+                    back = (d + 4) % 8; px = nx; py = ny; found = true; break
                 }
             }
             if (!found) return if (pts.size >= 3) pts else null
@@ -260,54 +223,19 @@ class SegOverlayView @JvmOverloads constructor(
             if (seen[start] || mask[start].toInt() != 1) continue
             var sp = 0
             val comp = ArrayList<Int>(256)
-            stack[sp++] = start
-            seen[start] = true
+            stack[sp++] = start; seen[start] = true
             while (sp > 0) {
-                val cur = stack[--sp]
-                comp.add(cur)
-                val x = cur % n
-                val y = cur / n
-                if (x > 0 && !seen[cur - 1] && mask[cur - 1].toInt() == 1) {
-                    seen[cur - 1] = true; stack[sp++] = cur - 1
-                }
-                if (x < n - 1 && !seen[cur + 1] && mask[cur + 1].toInt() == 1) {
-                    seen[cur + 1] = true; stack[sp++] = cur + 1
-                }
-                if (y > 0 && !seen[cur - n] && mask[cur - n].toInt() == 1) {
-                    seen[cur - n] = true; stack[sp++] = cur - n
-                }
-                if (y < n - 1 && !seen[cur + n] && mask[cur + n].toInt() == 1) {
-                    seen[cur + n] = true; stack[sp++] = cur + n
-                }
+                val cur = stack[--sp]; comp.add(cur)
+                val x = cur % n; val y = cur / n
+                if (x > 0   && !seen[cur-1] && mask[cur-1].toInt()==1) { seen[cur-1]=true; stack[sp++]=cur-1 }
+                if (x < n-1 && !seen[cur+1] && mask[cur+1].toInt()==1) { seen[cur+1]=true; stack[sp++]=cur+1 }
+                if (y > 0   && !seen[cur-n] && mask[cur-n].toInt()==1) { seen[cur-n]=true; stack[sp++]=cur-n }
+                if (y < n-1 && !seen[cur+n] && mask[cur+n].toInt()==1) { seen[cur+n]=true; stack[sp++]=cur+n }
             }
             comps.add(comp.toIntArray())
         }
         comps.sortByDescending { it.size }
         return comps
-    }
-
-    private fun cross(o: FloatArray, a: FloatArray, b: FloatArray): Float =
-        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
-    private fun convexHull(pts: ArrayList<FloatArray>): ArrayList<FloatArray> {
-        pts.sortWith(compareBy({ it[0] }, { it[1] }))
-        val hull = ArrayList<FloatArray>(pts.size / 2 + 4)
-        for (p in pts) {
-            while (hull.size >= 2 && cross(hull[hull.size - 2], hull[hull.size - 1], p) <= 0f) {
-                hull.removeAt(hull.size - 1)
-            }
-            hull.add(p)
-        }
-        val lowerSize = hull.size + 1
-        for (i in pts.size - 2 downTo 0) {
-            val p = pts[i]
-            while (hull.size >= lowerSize && cross(hull[hull.size - 2], hull[hull.size - 1], p) <= 0f) {
-                hull.removeAt(hull.size - 1)
-            }
-            hull.add(p)
-        }
-        if (hull.size > 1) hull.removeAt(hull.size - 1)
-        return hull
     }
 
     private fun simplify(pts: List<FloatArray>, eps: Float): ArrayList<FloatArray> {
@@ -321,20 +249,14 @@ class SegOverlayView @JvmOverloads constructor(
 
     private fun simplifyRec(pts: List<FloatArray>, first: Int, last: Int, eps: Float, keep: BooleanArray) {
         if (last <= first + 1) return
-        var maxDist = 0f
-        var idx = -1
-        val a = pts[first]
-        val b = pts[last]
-        val dx = b[0] - a[0]
-        val dy = b[1] - a[1]
-        val len = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat().coerceAtLeast(1e-6f)
-        for (i in first + 1 until last) {
+        var maxDist = 0f; var idx = -1
+        val a = pts[first]; val b = pts[last]
+        val dx = b[0]-a[0]; val dy = b[1]-a[1]
+        val len = Math.sqrt((dx*dx+dy*dy).toDouble()).toFloat().coerceAtLeast(1e-6f)
+        for (i in first+1 until last) {
             val p = pts[i]
-            val d = Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / len
-            if (d > maxDist) {
-                maxDist = d
-                idx = i
-            }
+            val d = Math.abs((p[0]-a[0])*dy - (p[1]-a[1])*dx) / len
+            if (d > maxDist) { maxDist = d; idx = i }
         }
         if (maxDist > eps && idx > 0) {
             keep[idx] = true
