@@ -124,8 +124,8 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 hudText.text = String.format(
                     Locale.CHINA,
-                    "分割 %d ms | 端到端 %d ms\n画面中央 %.0f%% 可通行（绿）\n中心判定: %s",
-                    res.ms, totalMs, res.walkPct, res.centerClass
+                    "分割 %d ms | 端到端 %d ms\n画面中央 %.0f%% 可通行（绿）\n中心Top3: %s",
+                    res.ms, totalMs, res.walkPct, res.centerTop3
                 )
                 overlayView.update(res.walkable, res.maskSize, info)
                 overlayView.setDebug(rgb.copyOf(), res.centerClass)
